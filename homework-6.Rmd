@@ -46,6 +46,13 @@ tidymodels_prefer()
 library(janitor)
 library(corrr)
 library(corrplot)
+library(rpart.plot)
+library(parsnip)
+library(tune)
+library(modeldata)
+library(workflows)
+library(ranger)
+library(vip)
 
 data <- read.csv("data/Pokemon.csv")
 data <- data %>% 
@@ -131,18 +138,18 @@ class_tree_spec <- tree_spec %>%
 
 class_tree_wf <- workflow() %>%
   add_model(class_tree_spec %>% set_args(cost_complexity = tune())) %>%
-  add_formula(type_1 ~ .)
+  add_recipe(poke_rec)
 
 param_grid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
 
-tune_res <- tune_grid(
+tune_res1 <- tune_grid(
   class_tree_wf, 
   resamples = poke_folds, 
   grid = param_grid, 
   metrics = metric_set(roc_auc)
 )
 
-autoplot(tune_res)
+autoplot(tune_res1)
 
 ```
 
@@ -150,45 +157,205 @@ autoplot(tune_res)
 
 What is the `roc_auc` of your best-performing pruned decision tree on the folds? *Hint: Use `collect_metrics()` and `arrange()`.*
 
+```{r}
+
+arrange(collect_metrics(tune_res1), desc(mean))[[1,4]]
+
+```
+
 ### Exercise 5
 
 Using `rpart.plot`, fit and visualize your best-performing pruned decision tree with the *training* set.
+
+```{r}
+
+best_complexity <- select_best(tune_res1)
+
+class_tree_final <- finalize_workflow(class_tree_wf, best_complexity)
+
+class_tree_final_fit <- fit(class_tree_final, data = poke_train)
+
+class_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+
+```
 
 ### Exercise 5
 
 Now set up a random forest model and workflow. Use the `ranger` engine and set `importance = "impurity"`. Tune `mtry`, `trees`, and `min_n`. Using the documentation for `rand_forest()`, explain in your own words what each of these hyperparameters represent.
 
+```{r}
+
+class_rf_spec <- rand_forest() %>%
+  set_engine(engine = "ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+class_rf_wf <- workflow() %>%
+  add_model(class_rf_spec %>% set_args(mtry = tune(), trees = tune(), min_n = tune())) %>%
+  add_recipe(poke_rec)
+
+```
+
+mtry is the number of predictors that will be sampled for each tree.
+trees is the number of trees.
+min_n is the minimum number of data points in a branch for it to be split again.
+
 Create a regular grid with 8 levels each. You can choose plausible ranges for each hyperparameter. Note that `mtry` should not be smaller than 1 or larger than 8. **Explain why not. What type of model would `mtry = 8` represent?**
+
+```{r}
+
+param_grid <- grid_regular(mtry(range = c(2, 7)), trees(range = c(1000,9000)), min_n(range = c(5,48)), levels = 8)
+
+```
+
+mtry = 8 represents sampling choosing all 8 predictors.
 
 ### Exercise 6
 
 Specify `roc_auc` as a metric. Tune the model and print an `autoplot()` of the results. What do you observe? What values of the hyperparameters seem to yield the best performance?
 
+```{r}
+ 
+# tune_res <- tune_grid(
+#    class_rf_wf,
+#    resamples = poke_folds,
+#    grid = param_grid,
+#    metrics = metric_set(roc_auc)
+# )
+# 
+# save(tune_res, file = "data/tune_res2.rda")
+load(file = "data/tune_res2.rda")
+tune_res2 <- tune_res
+autoplot(tune_res2)
+
+```
+
+Increasing mtry increases roc_auc the most. Around 23 or 29 minimal node seems to correlate to the highest roc_auc. Finally the number of trees seems to yield the highest auc_roc around 2500. Additional trees are incrementally helpful at best.
+
 ### Exercise 7
 
 What is the `roc_auc` of your best-performing random forest model on the folds? *Hint: Use `collect_metrics()` and `arrange()`.*
+
+```{r}
+
+arrange(collect_metrics(tune_res2), desc(mean))[[1,6]]
+
+```
 
 ### Exercise 8
 
 Create a variable importance plot, using `vip()`, with your best-performing random forest model fit on the *training* set.
 
+```{r}
+
+best_complexity <- select_best(tune_res2)
+
+class_rf_final <- finalize_workflow(class_rf_wf, best_complexity)
+
+class_rf_final_fit <- fit(class_rf_final, data = poke_train)
+
+class_rf_final_fit%>%
+  pull_workflow_fit()%>%
+  vip()
+
+```
+
 Which variables were most useful? Which were least useful? Are these results what you expected, or not?
+
+Special attack was the most useful in my model. Generation and legendary were the least useful. This is not what I expected.
 
 ### Exercise 9
 
 Finally, set up a boosted tree model and workflow. Use the `xgboost` engine. Tune `trees`. Create a regular grid with 10 levels; let `trees` range from 10 to 2000. Specify `roc_auc` and again print an `autoplot()` of the results. 
+```{r}
+
+class_rf_spec <- boost_tree() %>%
+  set_engine(engine = "xgboost") %>%
+  set_mode("classification")
+
+class_rf_wf <- workflow() %>%
+  add_model(class_rf_spec %>% set_args(trees = tune())) %>%
+  add_recipe(poke_rec)
+
+param_grid <- grid_regular(trees(range = c(10,2000)), levels = 10)
+
+# tune_res <- tune_grid(
+#    class_rf_wf,
+#    resamples = poke_folds,
+#    grid = param_grid,
+#    metrics = metric_set(roc_auc)
+# )
+# 
+# save(tune_res, file = "data/tune_res3.rda")
+load(file = "data/tune_res3.rda")
+tune_res3 <- tune_res
+autoplot(tune_res3)
+
+```
 
 What do you observe?
 
+There is a peak roc_auc at around 200 and 800.
+
 What is the `roc_auc` of your best-performing boosted tree model on the folds? *Hint: Use `collect_metrics()` and `arrange()`.*
+
+```{r}
+
+arrange(collect_metrics(tune_res3), desc(mean))[[1,4]]
+
+```
 
 ### Exercise 10
 
 Display a table of the three ROC AUC values for your best-performing pruned tree, random forest, and boosted tree models. Which performed best on the folds? Select the best of the three and use `select_best()`, `finalize_workflow()`, and `fit()` to fit it to the *testing* set. 
 
+```{r}
+
+df <- data.frame(model = c('Pruned Tree', 'Random Forest', 'Boosted Tree'),
+                 roc_auc = c(
+                   arrange(collect_metrics(tune_res1), desc(mean))[[1,4]],
+                   arrange(collect_metrics(tune_res2), desc(mean))[[1,6]],
+                   arrange(collect_metrics(tune_res3), desc(mean))[[1,4]])) 
+
+df
+#points=round(runif(16, 4, 20),0))
+
+best_complexity <- select_best(tune_res2)
+
+class_rf_final <- finalize_workflow(class_rf_wf, best_complexity)
+
+class_rf_final_fit <- fit(class_rf_final, data = poke_test)
+
+```
+
+The Random Forest was the best performing model.
+
 Print the AUC value of your best-performing model on the testing set. Print the ROC curves. Finally, create and visualize a confusion matrix heat map.
 
+```{r}
+augment(class_rf_final_fit, new_data = poke_test) %>% 
+  roc_auc(type_1, c(.pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Psychic, .pred_Water))
+
+augment(class_rf_final_fit, new_data = poke_test) %>% 
+  roc_curve(type_1, c(.pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Psychic, .pred_Water)) %>%
+  autoplot()
+
+word <- augment(class_rf_final_fit, new_data = poke_test) %>%
+  conf_mat(truth = type_1, estimate = .pred_class)
+
+word <- data.frame(word$table)
+
+ggplot(word, mapping = aes(x = Prediction, y = Truth)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f",Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "steelblue")
+
+```
+
 Which classes was your model most accurate at predicting? Which was it worst at?
+
+My model was 100% accurate on all categories.
 
 ## For 231 Students
 
